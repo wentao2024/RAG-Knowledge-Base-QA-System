@@ -241,6 +241,4 @@ Sub-queries:
 * **LLM**: Anthropic Claude / OpenAI
 * **Containerization**: Docker + Docker Compose
 
----
 
-If you want, I can also help you **optimize this README for recruiter impact** (e.g., add system design highlights, QPS, scalability, and engineering depth) — that’s usually what makes it stand out for AI startup roles.
