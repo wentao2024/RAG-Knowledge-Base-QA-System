@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化数据（向量库、BM25索引、上传文件）
+      - rag_chroma:/app/data/chroma
+      - rag_uploads:/app/data/uploads
+      # 开发模式：挂载代码热重载（生产可注释掉）
+      # - ./app:/app/app
+    environment:
+      # ── OpenAI 配置 ───────────────────────────────
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+
+      # ── Embedding 模型 ────────────────────────────
+      - EMBED_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+
+      # ── 存储路径 ──────────────────────────────────
+      - CHROMA_PERSIST_DIR=/app/data/chroma
+      - UPLOAD_DIR=/app/data/uploads
+
+      # ── 检索参数 ──────────────────────────────────
+      - TOP_K=5
+      - RRF_K=60
+      - BM25_WEIGHT=0.4
+      - VECTOR_WEIGHT=0.6
+
+      # ── 分块参数 ──────────────────────────────────
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=64
+
+      # ── 日志 ──────────────────────────────────────
+      - LOG_LEVEL=INFO
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+volumes:
+  rag_chroma:
+    driver: local
+  rag_uploads:
+    driver: local
+
+networks:
+  default:
+    name: rag-network
