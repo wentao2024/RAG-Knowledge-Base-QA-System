@@ -17,6 +17,7 @@ from app.models.schemas import UploadResponse, ListDocumentsResponse, DocumentIn
 from app.core.document_processor import DocumentProcessor
 from app.core.vector_store import VectorStore
 from app.core.bm25_store import BM25Store
+from app.core.parent_store import ParentStore
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -69,36 +70,53 @@ async def upload_document(file: UploadFile = File(...)):
     logger.info(f"文件保存: {save_path}，大小: {len(content)/1024:.1f} KB")
 
     try:
-        # 处理文档
         processor = DocumentProcessor()
-        doc_id, chunks = processor.process_pdf(save_path, file.filename)
 
-        if not chunks:
+        if settings.enable_parent_child:
+            doc_id, parent_chunks, child_chunks = processor.process_pdf_parent_child(
+                save_path, file.filename
+            )
+            index_chunks = child_chunks   # 小块入向量库 / BM25
+            display_count = len(parent_chunks)
+            msg = (
+                f"上传成功！父块 {len(parent_chunks)} 个（喂给 LLM），"
+                f"子块 {len(child_chunks)} 个（用于精确检索）"
+            )
+        else:
+            doc_id, chunks = processor.process_pdf(save_path, file.filename)
+            index_chunks = chunks
+            display_count = len(chunks)
+            msg = f"上传成功！已创建 {len(chunks)} 个文本块"
+
+        if not index_chunks:
             raise HTTPException(status_code=422, detail="PDF 内容为空或无法解析")
 
         # 写入索引
         vector_store = VectorStore()
         bm25_store = BM25Store()
-        vector_store.add_chunks(chunks)
-        bm25_store.add_chunks(chunks)
+        vector_store.add_chunks(index_chunks)
+        bm25_store.add_chunks(index_chunks)
+
+        if settings.enable_parent_child:
+            ParentStore().add_parents(parent_chunks)
 
         # 保存元信息
         meta = _load_doc_meta()
         meta[doc_id] = {
             "filename": file.filename,
-            "chunks_count": len(chunks),
+            "chunks_count": display_count,
             "upload_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "file_path": save_path,
         }
         _save_doc_meta(meta)
 
-        logger.info(f"文档索引完成: {file.filename}, doc_id={doc_id}, chunks={len(chunks)}")
+        logger.info(f"文档索引完成: {file.filename}, doc_id={doc_id}, chunks={display_count}")
 
         return UploadResponse(
             filename=file.filename,
             doc_id=doc_id,
-            chunks_count=len(chunks),
-            message=f"上传成功！已创建 {len(chunks)} 个文本块",
+            chunks_count=display_count,
+            message=msg,
         )
 
     except HTTPException:
@@ -140,6 +158,8 @@ async def delete_document(doc_id: str):
     bm25_store = BM25Store()
     v_count = vector_store.delete_by_doc_id(doc_id)
     b_count = bm25_store.delete_by_doc_id(doc_id)
+    if settings.enable_parent_child:
+        ParentStore().delete_by_doc_id(doc_id)
 
     # 删除文件
     file_path = info.get("file_path", "")
