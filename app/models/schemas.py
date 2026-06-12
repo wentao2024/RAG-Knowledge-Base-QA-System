@@ -37,6 +37,7 @@ class ChatResponse(BaseModel):
     rewritten_query: Optional[str] = None
     sources: List[SourceChunk] = []
     eval_scores: Optional[Dict[str, float]] = None
+    latency_ms: Optional[float] = None
 
 
 class UploadResponse(BaseModel):
