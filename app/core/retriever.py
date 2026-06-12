@@ -1,68 +1,47 @@
 """
 RRF (Reciprocal Rank Fusion) 混合检索器
-将向量检索（密集）+ BM25 (稀疏)融合排序，提升召回质量
+
+Pipeline（Parent-Child 模式开启时）：
+  Query
+    → asyncio.gather[ VectorSearch(child), BM25(child) ]   # 并行双路小块召回
+    → RRF 融合
+    → Cross-encoder Rerank（在子块上精排，文本短、精度更高）
+    → Expand to Parent（用 parent_id 换回大块，喂给 LLM 上下文更完整）
 """
-from typing import List, Dict, Any, Optional
+import asyncio
+from typing import Dict, List, Any, Optional
+
 from loguru import logger
+
 from app.config import settings
-from app.core.vector_store import VectorStore
 from app.core.bm25_store import BM25Store
-
-
-def reciprocal_rank_fusion(
-    rank_lists: List[List[Dict[str, Any]]],
-    k: int = 60,
-    weights: Optional[List[float]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    RRF 算法实现
-    
-    公式:RRF(d) = Σ weight_i / (k + rank_i(d))
-    
-    Args:
-        rank_lists: 多个排序结果列表，每个元素含 'content' 和 'metadata'
-        k: RRF 平滑系数（通常取 60)
-        weights: 各列表的权重，默认均等
-    
-    Returns:
-        融合后的排序结果列表（含 rrf_score)
-    """
-    if weights is None:
-        weights = [1.0] * len(rank_lists)
-    assert len(weights) == len(rank_lists), "权重数量须与列表数量一致"
-
-    # 用 content 作为 key 聚合分数
-    scores: Dict[str, float] = {}
-    doc_map: Dict[str, Dict[str, Any]] = {}
-
-    for rank_list, weight in zip(rank_lists, weights):
-        for rank, doc in enumerate(rank_list, start=1):
-            key = doc["content"][:200]  # 截断作为 key
-            rrf_score = weight / (k + rank)
-            scores[key] = scores.get(key, 0.0) + rrf_score
-            if key not in doc_map:
-                doc_map[key] = doc
-
-    # 按 RRF 分数排序
-    sorted_keys = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-    results = []
-    for key in sorted_keys:
-        doc = doc_map[key].copy()
-        doc["rrf_score"] = round(scores[key], 6)
-        doc["score"] = doc["rrf_score"]  # 统一字段名
-        results.append(doc)
-
-    return results
+from app.core.rrf import reciprocal_rank_fusion  # noqa: F401 — re-exported
+from app.core.vector_store import VectorStore
 
 
 class HybridRetriever:
-    """混合检索器：向量 + BM25 → RRF 融合"""
+    """混合检索器：向量 + BM25 并行召回 → RRF → Rerank → Parent 扩展"""
 
     def __init__(self):
         self.vector_store = VectorStore()
         self.bm25_store = BM25Store()
 
-    def retrieve(
+        if settings.enable_reranker:
+            from app.core.reranker import Reranker
+            self.reranker = Reranker()
+        else:
+            self.reranker = None
+
+        # Parent-Child：检索子块，扩展父块给 LLM
+        if settings.enable_parent_child:
+            from app.core.parent_store import ParentStore
+            self.parent_store = ParentStore()
+        else:
+            self.parent_store = None
+
+    # ─── 主检索入口 ────────────────────────────────────────────────────────────
+
+    async def retrieve(
         self,
         query: str,
         top_k: int = None,
@@ -71,50 +50,66 @@ class HybridRetriever:
         vector_weight: float = None,
     ) -> List[Dict[str, Any]]:
         """
-        混合检索主入口
-        
-        1. 并行执行向量检索 + BM25 检索
-        2. 对两路结果执行 RRF 融合
-        3. 返回 top_k 个融合结果
+        1. 向量检索 + BM25 检索 并行执行（asyncio.gather + to_thread）
+        2. RRF 融合两路结果
+        3. Cross-encoder rerank（在子块上精排）
+        4. 扩展为父块（Parent-Child 模式）
+        5. 返回 top_k 个结果
         """
         k = top_k or settings.top_k
         rrf_k_val = rrf_k or settings.rrf_k
         bw = bm25_weight if bm25_weight is not None else settings.bm25_weight
         vw = vector_weight if vector_weight is not None else settings.vector_weight
-
-        # 扩大召回量，融合后再截断
         recall_k = k * 3
 
-        logger.info(f"[Retriever] Query='{query[:50]}', top_k={k}")
+        logger.info(
+            f"[Retriever] Query='{query[:50]}', top_k={k}, "
+            f"reranker={'on' if self.reranker else 'off'}, "
+            f"parent_child={'on' if self.parent_store else 'off'}"
+        )
 
-        # 向量检索
-        vector_results = self.vector_store.query(query, top_k=recall_k)
-        logger.debug(f"  向量检索召回: {len(vector_results)} 条")
+        # ── 1. 并行双路召回 ────────────────────────────────────────────────────
+        vector_results, bm25_results = await asyncio.gather(
+            asyncio.to_thread(self.vector_store.query, query, recall_k),
+            asyncio.to_thread(self.bm25_store.query, query, recall_k),
+        )
+        logger.debug(f"  向量召回: {len(vector_results)}, BM25召回: {len(bm25_results)}")
 
-        # BM25 检索
-        bm25_results = self.bm25_store.query(query, top_k=recall_k)
-        logger.debug(f"  BM25 检索召回: {len(bm25_results)} 条")
-
-        # RRF 融合
+        # ── 2. RRF 融合 ────────────────────────────────────────────────────────
         fused = reciprocal_rank_fusion(
             rank_lists=[vector_results, bm25_results],
             k=rrf_k_val,
             weights=[vw, bw],
         )
 
-        final = fused[:k]
-        logger.info(f"  RRF 融合后返回: {len(final)} 条")
+        # ── 3. Cross-encoder rerank（在子块上精排，文本短效果更好）────────────
+        if self.reranker is not None and fused:
+            final = await asyncio.to_thread(self.reranker.rerank, query, fused, k)
+            logger.info(f"  Rerank后: {len(final)} 条")
+        else:
+            final = fused[:k]
+            logger.info(f"  RRF融合后: {len(final)} 条")
+
+        # ── 4. 扩展为父块（Rerank 之后再扩展，保证精排基于小块）────────────────
+        if self.parent_store is not None and final:
+            final = self._expand_to_parents(final)
+            logger.info(f"  父块扩展后: {len(final)} 条")
+
         return final
 
-    def retrieve_with_details(
+    # ─── 调试用：返回各子检索详情 ──────────────────────────────────────────────
+
+    async def retrieve_with_details(
         self, query: str, top_k: int = None
     ) -> Dict[str, Any]:
         """检索并返回详细信息（含各子检索结果，便于调试）"""
         k = top_k or settings.top_k
         recall_k = k * 3
 
-        vector_results = self.vector_store.query(query, top_k=recall_k)
-        bm25_results = self.bm25_store.query(query, top_k=recall_k)
+        vector_results, bm25_results = await asyncio.gather(
+            asyncio.to_thread(self.vector_store.query, query, recall_k),
+            asyncio.to_thread(self.bm25_store.query, query, recall_k),
+        )
 
         fused = reciprocal_rank_fusion(
             rank_lists=[vector_results, bm25_results],
@@ -122,8 +117,59 @@ class HybridRetriever:
             weights=[settings.vector_weight, settings.bm25_weight],
         )
 
+        final = fused[:k]
+        if self.reranker is not None and fused:
+            final = await asyncio.to_thread(self.reranker.rerank, query, fused, k)
+
+        if self.parent_store is not None and final:
+            final = self._expand_to_parents(final)
+
         return {
-            "final": fused[:k],
+            "final": final,
             "vector_results": vector_results[:k],
             "bm25_results": bm25_results[:k],
         }
+
+    # ─── 父块扩展 ──────────────────────────────────────────────────────────────
+
+    def _expand_to_parents(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        将子块检索结果扩展为对应父块。
+
+        - 同一 parent_id 只保留一条（取分数最高的子块排名）
+        - 没有 parent_id 的旧文档原样返回（向后兼容）
+        - 父块找不到时（数据不一致）回退到子块内容
+        """
+        result = []
+        seen_parents: set = set()
+
+        for doc in docs:
+            parent_id = doc.get("metadata", {}).get("parent_id")
+
+            if not parent_id:
+                # 旧文档（无 parent_id），直接使用
+                result.append(doc)
+                continue
+
+            if parent_id in seen_parents:
+                # 同一父块已被更高排名的子块代表，跳过
+                continue
+
+            parent = self.parent_store.get(parent_id)
+            if parent:
+                expanded = {
+                    "content": parent["content"],          # 大块内容喂给 LLM
+                    "metadata": parent["metadata"],
+                    "score": doc["score"],                  # 保留子块的排名分数
+                    "rrf_score": doc.get("rrf_score", 0),
+                }
+                if "rerank_score" in doc:
+                    expanded["rerank_score"] = doc["rerank_score"]
+                result.append(expanded)
+                seen_parents.add(parent_id)
+            else:
+                # 父块丢失（不应发生），回退到子块
+                logger.warning(f"父块 {parent_id} 未找到，回退到子块内容")
+                result.append(doc)
+
+        return result
