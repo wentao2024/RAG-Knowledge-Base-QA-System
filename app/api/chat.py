@@ -1,8 +1,9 @@
 """
 完整 RAG 流程
-Query改写 → 混合检索(RRF) → 生成 → 评估
+Query改写 → 并行混合检索(RRF) → Cross-encoder Rerank → 生成 → 评估
 """
 import json
+import time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from loguru import logger
@@ -21,7 +22,6 @@ from app.core.session_manager import session_manager
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
-# 初始化（首次请求时加载）
 _retriever: HybridRetriever = None
 _rewriter: QueryRewriter = None
 _generator: RAGGenerator = None
@@ -46,10 +46,12 @@ async def chat(req: ChatRequest):
     完整流程：
     1. 加载会话历史（多轮对话）
     2. Query 改写（补全指代，扩展关键词）
-    3. RRF 混合检索 向量 + BM25
+    3. 并行 RRF 混合检索（向量 + BM25）→ cross-encoder rerank
     4. 生成答案
     5. 更新会话历史
     """
+    _start = time.perf_counter()
+
     try:
         retriever, rewriter, generator, evaluator = get_components()
     except Exception as e:
@@ -67,17 +69,15 @@ async def chat(req: ChatRequest):
             rewritten_query = rewrite_result["rewritten"]
         except Exception as e:
             logger.warning(f"Query改写失败 使用原始Query: {e}")
-            rewritten_query = req.query  # 降级到原始 query
 
-    # ── 2. RRF 混合检索 ───────────────────────────────────────────────────────
+    # ── 2. 并行 RRF 混合检索 ──────────────────────────────────────────────────
     top_k = req.top_k or 5
     try:
-        retrieved = retriever.retrieve(rewritten_query, top_k=top_k)
+        retrieved = await retriever.retrieve(rewritten_query, top_k=top_k)
     except Exception as e:
         logger.error(f"检索失败: {e}")
         retrieved = []
 
-    # 构造 SourceChunk
     sources = []
     for doc in retrieved:
         meta = doc.get("metadata", {})
@@ -111,19 +111,24 @@ async def chat(req: ChatRequest):
     # ── 4. 更新会话历史 ───────────────────────────────────────────────────────
     session_manager.add_turn(session_id, req.query, answer)
 
-    # ── 5. 构造响应 ───────────────────────────────────────────────────────────
+    latency_ms = round((time.perf_counter() - _start) * 1000, 1)
+    logger.info(f"请求完成，latency={latency_ms}ms")
+
     return ChatResponse(
         answer=answer,
         session_id=session_id,
         original_query=req.query,
         rewritten_query=rewritten_query if rewritten_query != req.query else None,
         sources=sources,
+        latency_ms=latency_ms,
     )
 
 
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
     """流式 RAG 问答接口"""
+    _start = time.perf_counter()
+
     try:
         retriever, rewriter, generator, evaluator = get_components()
     except Exception as e:
@@ -132,7 +137,6 @@ async def chat_stream(req: ChatRequest):
     session_id = req.session_id
     history = session_manager.get_history(session_id)
 
-    # 改写
     rewritten_query = req.query
     if req.enable_rewrite:
         try:
@@ -141,35 +145,35 @@ async def chat_stream(req: ChatRequest):
         except Exception as e:
             logger.warning(f"改写失败: {e}")
 
-    # 检索
     top_k = req.top_k or 5
     try:
-        retrieved = retriever.retrieve(rewritten_query, top_k=top_k)
+        retrieved = await retriever.retrieve(rewritten_query, top_k=top_k)
     except Exception as e:
         logger.error(f"检索失败: {e}")
         retrieved = []
 
-    async def event_generator():
-        try:
-            # 先发送元信息
-            meta = {
-                "event": "meta",
-                "original_query": req.query,
-                "rewritten_query": rewritten_query,
-                "sources": [
-                    {
-                        "source": d.get("metadata", {}).get("source", ""),
-                        "page": int(d.get("metadata", {}).get("page", 0)),
-                        "score": round(float(d.get("score", 0)), 4),
-                        "content": d.get("content", "")[:200],
-                    }
-                    for d in retrieved
-                ],
-            }
-            yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
+    retrieve_ms = round((time.perf_counter() - _start) * 1000, 1)
 
-            # 流式生成
-            full_answer = ""
+    async def event_generator():
+        meta = {
+            "event": "meta",
+            "original_query": req.query,
+            "rewritten_query": rewritten_query,
+            "retrieve_latency_ms": retrieve_ms,
+            "sources": [
+                {
+                    "source": d.get("metadata", {}).get("source", ""),
+                    "page": int(d.get("metadata", {}).get("page", 0)),
+                    "score": round(float(d.get("score", 0)), 4),
+                    "content": d.get("content", "")[:200],
+                }
+                for d in retrieved
+            ],
+        }
+        yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
+
+        full_answer = ""
+        try:
             async for token in generator.stream_generate(
                 query=rewritten_query,
                 retrieved_docs=retrieved,
@@ -178,9 +182,9 @@ async def chat_stream(req: ChatRequest):
                 full_answer += token
                 yield f"data: {json.dumps({'event': 'token', 'text': token}, ensure_ascii=False)}\n\n"
 
-            # 更新会话
             session_manager.add_turn(session_id, req.query, full_answer)
-            yield f"data: {json.dumps({'event': 'done'}, ensure_ascii=False)}\n\n"
+            total_ms = round((time.perf_counter() - _start) * 1000, 1)
+            yield f"data: {json.dumps({'event': 'done', 'latency_ms': total_ms}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             logger.error(f"流式生成失败: {e}")
