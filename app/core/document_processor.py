@@ -29,9 +29,13 @@ class DocumentProcessor:
         self,
         chunk_size: int = None,
         chunk_overlap: int = None,
+        child_chunk_size: int = None,
+        child_chunk_overlap: int = None,
     ):
         self.chunk_size = chunk_size or settings.chunk_size
         self.chunk_overlap = chunk_overlap or settings.chunk_overlap
+        self.child_chunk_size = child_chunk_size or settings.child_chunk_size
+        self.child_chunk_overlap = child_chunk_overlap or settings.child_chunk_overlap
 
     # ─── PDF解析 ───────────────────────────────────────────────────────────────
 
@@ -154,3 +158,54 @@ class DocumentProcessor:
         pages = self.extract_text_from_pdf(pdf_path)
         chunks = self.split_into_chunks(pages, filename, doc_id)
         return doc_id, chunks
+
+    def process_pdf_parent_child(
+        self, pdf_path: str, filename: str
+    ) -> Tuple[str, List["Chunk"], List["Chunk"]]:
+        """
+        Parent-Child 模式处理 PDF。
+
+        返回 (doc_id, parent_chunks, child_chunks)：
+          - parent_chunks：大块（~chunk_size 字），存入 ParentStore，喂给 LLM
+          - child_chunks：小块（~child_chunk_size 字），存入向量库 + BM25，做 Embedding
+        """
+        doc_id = str(uuid.uuid4())
+        pages = self.extract_text_from_pdf(pdf_path)
+        parent_chunks = self.split_into_chunks(pages, filename, doc_id)
+        child_chunks = []
+        for parent in parent_chunks:
+            child_chunks.extend(self._split_into_children(parent))
+        logger.info(
+            f"Parent-Child 分块完成: {len(parent_chunks)} 父块, {len(child_chunks)} 子块"
+        )
+        return doc_id, parent_chunks, child_chunks
+
+    def _split_into_children(self, parent: "Chunk") -> List["Chunk"]:
+        """将一个父 Chunk 拆分为若干小子 Chunk，子 Chunk 携带 parent_id。"""
+        sub_texts = self._sliding_window_child(parent.content)
+        children = []
+        for text in sub_texts:
+            child = Chunk(
+                content=text,
+                metadata={
+                    **parent.metadata,
+                    "parent_id": parent.id,
+                    "chunk_type": "child",
+                },
+            )
+            children.append(child)
+        return children
+
+    def _sliding_window_child(self, text: str) -> List[str]:
+        """按 child_chunk_size / child_chunk_overlap 滑窗切分。"""
+        chunks = []
+        start = 0
+        size = self.child_chunk_size
+        overlap = self.child_chunk_overlap
+        while start < len(text):
+            end = min(start + size, len(text))
+            chunks.append(text[start:end])
+            if end == len(text):
+                break
+            start += size - overlap
+        return chunks
