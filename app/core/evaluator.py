@@ -1,12 +1,23 @@
 """
 RAG 评估模块：忠实度、答案相关性、上下文精确率
-使用 LLM 作为评判 + 关键词覆盖辅助
+三项 LLM 评估并行执行（Semaphore 控制并发，避免限流）。
 """
+import asyncio
 import re
-from typing import List, Optional, Dict
+from typing import List, Optional
 from loguru import logger
 from app.core.llm_client import LLMClient
 from app.models.schemas import EvalResponse
+
+
+def _extract_score(text: str) -> float:
+    """从 LLM 输出中提取 0-1 数值分数"""
+    text = text.strip()
+    match = re.search(r"(\d+\.?\d*)", text)
+    if match:
+        score = float(match.group(1))
+        return min(max(score, 0.0), 1.0)
+    return 0.5
 
 
 FAITHFULNESS_PROMPT = """请评估以下答案对参考文档的忠实程度。
@@ -65,7 +76,7 @@ def _extract_score(text: str) -> float:
     if match:
         score = float(match.group(1))
         return min(max(score, 0.0), 1.0)
-    return 0.5  # 默认中间分
+    return 0.5
 
 
 class RAGEvaluator:
@@ -80,31 +91,30 @@ class RAGEvaluator:
         ground_truth: Optional[str] = None,
     ) -> EvalResponse:
         """
-        综合评估 RAG 输出质量
-        
-        Returns:
-            EvalResponse with scores:
-            - faithfulness: 忠实度（答案是否忠实于文档）
-            - answer_relevancy: 相关性（答案是否回答了问题）
-            - context_precision: 上下文精确率（检索文档质量）
-            - context_recall: 上下文召回率（需要 ground_truth）
-            - overall_score: 综合分
+        综合评估 RAG 输出质量。
+
+        三项 LLM 评估并行发起，Semaphore(2) 限制同时在途请求数。
         """
         ctx_text = "\n\n".join(
             [f"[文档{i+1}] {c[:500]}" for i, c in enumerate(contexts)]
         )
 
-        # 并行评估（顺序调用，避免并发限流）
-        faithfulness = await self._eval_faithfulness(ctx_text, answer)
-        relevancy = await self._eval_relevancy(question, answer)
-        precision = await self._eval_context_precision(question, ctx_text)
+        sem = asyncio.Semaphore(2)
 
-        # 召回率（需要 ground_truth）
+        async def limited(coro):
+            async with sem:
+                return await coro
+
+        faithfulness, relevancy, precision = await asyncio.gather(
+            limited(self._eval_faithfulness(ctx_text, answer)),
+            limited(self._eval_relevancy(question, answer)),
+            limited(self._eval_context_precision(question, ctx_text)),
+        )
+
         recall = None
         if ground_truth:
             recall = await self._eval_context_recall(ground_truth, ctx_text)
 
-        # 综合分
         scores = [faithfulness, relevancy, precision]
         if recall is not None:
             scores.append(recall)
