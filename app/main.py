@@ -98,8 +98,11 @@ async def health():
     }
 
 
-# 静态前端
-frontend_path = "/app/frontend"
+# 静态前端：优先 Docker 路径，回退到本地相对路径
+_docker_frontend = "/app/frontend"
+_local_frontend = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+frontend_path = _docker_frontend if os.path.exists(_docker_frontend) else _local_frontend
+
 if os.path.exists(frontend_path):
     app.mount("/static", StaticFiles(directory=frontend_path), name="static")
 
