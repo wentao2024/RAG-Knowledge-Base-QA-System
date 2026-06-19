@@ -1,38 +1,47 @@
 """
-RAG 生成器：组装检索上下文 → 调用 LLM 生成答案
+RAG Generator: assembles retrieval context and calls the LLM to produce an answer.
 """
-from typing import List, Dict, Any, AsyncIterator
+from typing import List, Dict, Any, AsyncIterator, Optional
 from loguru import logger
 from app.core.llm_client import LLMClient
 from app.models.schemas import Message
 
 
-RAG_SYSTEM_PROMPT = """你是一个专业的知识问答助手。请严格基于以下参考文档回答用户问题。
+_RAG_SYSTEM_PROMPT = """You are a professional knowledge Q&A assistant. Answer the user's question based on the information provided below.
 
-回答要求：
-1. **忠实于文档**：只使用参考文档中的信息，不要添加文档中没有的内容
-2. **结构清晰**：使用适当的格式（列表、段落）组织答案
-3. **标注来源**：在引用具体信息时，说明来自哪个文档/页面
-4. **承认局限**：如果文档中没有相关信息，明确告知用户
-5. **语言流畅**：用自然的中文表达，避免机械复述
-
-参考文档：
-{context}
-
+{user_context}{doc_context}
 ---
-请基于以上文档回答用户问题。"""
+Answer requirements:
+1. **Stay faithful to the documents**: Use only information from the reference documents; do not add content not found in them.
+2. **Be well-structured**: Organise your answer with appropriate formatting (lists, paragraphs).
+3. **Cite sources**: When referencing specific information, indicate which document/page it comes from.
+4. **Acknowledge limitations**: If the documents do not contain relevant information, clearly inform the user.
+5. **Write in fluent English**: Express ideas naturally; avoid mechanical paraphrasing.
+
+Please answer the user's question based on the information above."""
 
 
-def _build_context(retrieved_docs: List[Dict[str, Any]]) -> str:
-    """将检索结果格式化为上下文字符串"""
+def _build_doc_context(retrieved_docs: List[Dict[str, Any]]) -> str:
     parts = []
     for i, doc in enumerate(retrieved_docs, 1):
         meta = doc.get("metadata", {})
-        source = meta.get("source", "未知来源")
+        source = meta.get("source", "unknown source")
         page = meta.get("page", "?")
         content = doc.get("content", "")
-        parts.append(f"【文档{i}】来源: {source}，第{page}页\n{content}")
+        parts.append(f"[Doc {i}] Source: {source}, Page {page}\n{content}")
     return "\n\n".join(parts)
+
+
+def _build_user_context(memories: List[str], user_summary: Optional[str]) -> str:
+    parts = []
+    if user_summary:
+        parts.append(f"[User Background]\n{user_summary}")
+    if memories:
+        facts = "\n".join(f"- {m}" for m in memories)
+        parts.append(f"[Memories about this user]\n{facts}")
+    if not parts:
+        return ""
+    return "\n\n".join(parts) + "\n\n"
 
 
 class RAGGenerator:
@@ -44,22 +53,20 @@ class RAGGenerator:
         query: str,
         retrieved_docs: List[Dict[str, Any]],
         history: List[Message] = None,
+        memories: List[str] = None,
+        user_summary: Optional[str] = None,
         max_tokens: int = 2048,
     ) -> str:
-        """生成答案（非流式）"""
-        context = _build_context(retrieved_docs)
-        system = RAG_SYSTEM_PROMPT.format(context=context)
+        """Generate an answer (non-streaming)."""
+        user_ctx = _build_user_context(memories or [], user_summary)
+        doc_ctx = "Reference documents:\n" + _build_doc_context(retrieved_docs) if retrieved_docs else ""
+        system = _RAG_SYSTEM_PROMPT.format(user_context=user_ctx, doc_context=doc_ctx)
 
-        # 构造消息列表（多轮历史 + 当前问题）
         messages = list(history or [])
         messages.append(Message(role="user", content=query))
 
-        answer = await self.llm.chat(
-            system=system,
-            messages=messages,
-            max_tokens=max_tokens,
-        )
-        logger.info(f"生成答案完成，长度: {len(answer)} 字符")
+        answer = await self.llm.chat(system=system, messages=messages, max_tokens=max_tokens)
+        logger.info(f"Answer generation complete, length: {len(answer)} chars")
         return answer
 
     async def stream_generate(
@@ -67,22 +74,23 @@ class RAGGenerator:
         query: str,
         retrieved_docs: List[Dict[str, Any]],
         history: List[Message] = None,
+        memories: List[str] = None,
+        user_summary: Optional[str] = None,
         max_tokens: int = 2048,
     ) -> AsyncIterator[str]:
-        """流式生成答案(retrieved_docs 为空时自动切换为无上下文模式）"""
+        """Stream-generate an answer."""
         if retrieved_docs:
-            context = _build_context(retrieved_docs)
-            system = RAG_SYSTEM_PROMPT.format(context=context)
+            user_ctx = _build_user_context(memories or [], user_summary)
+            doc_ctx = "Reference documents:\n" + _build_doc_context(retrieved_docs)
+            system = _RAG_SYSTEM_PROMPT.format(user_context=user_ctx, doc_context=doc_ctx)
         else:
-            system = "你是一个专业助手。当前知识库中没有找到相关文档，请如实告知用户，并尝试用你自身的知识提供帮助，同时建议用户上传相关文档。"
+            system = "You are a professional assistant. No relevant documents were found in the knowledge base. Honestly inform the user, try to help with your own knowledge, and suggest they upload relevant documents."
 
         messages = list(history or [])
         messages.append(Message(role="user", content=query))
 
         async for token in self.llm.stream_chat(
-            system=system,
-            messages=messages,
-            max_tokens=max_tokens,
+            system=system, messages=messages, max_tokens=max_tokens
         ):
             yield token
 
@@ -91,8 +99,8 @@ class RAGGenerator:
         query: str,
         history: List[Message] = None,
     ) -> str:
-        """无上下文兜底回答（检索为空时）"""
-        system = "你是一个专业助手。当前知识库中没有找到相关文档，请如实告知用户，并尝试用你自身的知识提供帮助，同时建议用户上传相关文档。"
+        """Fallback answer when no documents were retrieved."""
+        system = "You are a professional assistant. No relevant documents were found in the knowledge base. Honestly inform the user, try to help with your own knowledge, and suggest they upload relevant documents."
         messages = list(history or [])
         messages.append(Message(role="user", content=query))
         return await self.llm.chat(system=system, messages=messages)

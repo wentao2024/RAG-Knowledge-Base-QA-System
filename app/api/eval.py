@@ -1,5 +1,5 @@
 """
-RAG 评估 API 对答案质量进行自动化评估
+RAG evaluation API — automated quality scoring of answers.
 """
 from fastapi import APIRouter, HTTPException
 from loguru import logger
@@ -21,17 +21,17 @@ def get_evaluator():
 @router.post("", response_model=EvalResponse)
 async def evaluate(req: EvalRequest):
     """
-    评估 RAG 输出质量
-    
-    指标：
-    - faithfulness: 忠实度 0-1
-    - answer_relevancy: 答案相关性 0-1
-    - context_precision: 上下文精确率 0-1
-    - context_recall: 上下文召回率  ground_truth 
-    - overall_score: 综合分 0-1
+    Evaluate RAG output quality.
+
+    Metrics:
+    - faithfulness: 0-1
+    - answer_relevancy: 0-1
+    - context_precision: 0-1
+    - context_recall: 0-1 (requires ground_truth)
+    - overall_score: 0-1
     """
     if not req.contexts:
-        raise HTTPException(status_code=400, detail="contexts 不能为空")
+        raise HTTPException(status_code=400, detail="contexts must not be empty")
 
     try:
         evaluator = get_evaluator()
@@ -43,8 +43,8 @@ async def evaluate(req: EvalRequest):
         )
         return result
     except Exception as e:
-        logger.error(f"评估失败: {e}")
-        raise HTTPException(status_code=500, detail=f"评估失败: {str(e)}")
+        logger.error(f"Evaluation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
 
 
 @router.get("/health")
