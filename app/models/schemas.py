@@ -15,11 +15,17 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    query: str = Field(..., description="用户问题")
-    session_id: str = Field(default="default", description="会话ID,用于多轮对话")
-    top_k: Optional[int] = Field(default=None, description="检索文档数量")
-    enable_rewrite: bool = Field(default=True, description="是否开启Query改写")
-    stream: bool = Field(default=False, description="是否流式输出")
+    query: str = Field(..., description="User question")
+    session_id: str = Field(default="default", description="Session ID for multi-turn conversation")
+    user_id: Optional[str] = Field(default=None, description="User ID for cross-session long-term memory")
+    top_k: Optional[int] = Field(default=None, description="Number of documents to retrieve")
+    enable_rewrite: bool = Field(default=True, description="Whether to enable query rewriting")
+    stream: bool = Field(default=False, description="Whether to stream the response")
+
+    @property
+    def effective_user_id(self) -> str:
+        """Falls back to session_id when user_id is not provided (session-level memory, backwards-compatible)."""
+        return self.user_id or self.session_id
 
 
 class SourceChunk(BaseModel):

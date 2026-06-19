@@ -1,7 +1,7 @@
 """
-多轮对话会话管理器
-- 内存存储（可替换为 Redis)
-- 会话隔离、历史截断
+Multi-turn conversation session manager.
+- In-memory storage (can be replaced with Redis).
+- Session isolation and history truncation.
 """
 import time
 from typing import Dict, List, Optional
@@ -10,7 +10,7 @@ from app.models.schemas import Message, MessageRole
 
 
 class SessionManager:
-    """LRU 会话管理器"""
+    """LRU session manager."""
 
     def __init__(self, max_sessions: int = 1000, max_history: int = 20):
         self.max_sessions = max_sessions
@@ -20,17 +20,17 @@ class SessionManager:
 
     def _evict_if_needed(self):
         while len(self._sessions) >= self.max_sessions:
-            self._sessions.popitem(last=False)  # 移除最旧的
+            self._sessions.popitem(last=False)  # remove the oldest
 
     def get_history(self, session_id: str) -> List[Message]:
-        """获取会话历史"""
+        """Retrieve session history."""
         session = self._sessions.get(session_id)
         if not session:
             return []
         return session["messages"]
 
     def add_turn(self, session_id: str, user_msg: str, assistant_msg: str):
-        """添加一轮对话"""
+        """Add one conversation turn."""
         if session_id not in self._sessions:
             self._evict_if_needed()
             self._sessions[session_id] = {
@@ -47,11 +47,11 @@ class SessionManager:
         )
         session["updated_at"] = time.time()
 
-        # 截断历史，保留最近 N 条
+        # Truncate history; keep the most recent N turns
         if len(session["messages"]) > self.max_history * 2:
             session["messages"] = session["messages"][-(self.max_history * 2):]
 
-        # 移到末尾（LRU）
+        # Move to end (LRU)
         self._sessions.move_to_end(session_id)
 
     def clear_session(self, session_id: str):
@@ -70,5 +70,5 @@ class SessionManager:
         return len(session["messages"]) // 2
 
 
-# 全局单例
+# Global singleton
 session_manager = SessionManager()
