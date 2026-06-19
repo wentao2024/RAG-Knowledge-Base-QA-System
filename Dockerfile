@@ -25,14 +25,20 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# 预下载 sentence-transformers 模型（构建时缓存）
+# Pre-download embedding model at build time
 RUN python -c "\
 from sentence_transformers import SentenceTransformer; \
 model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2'); \
-print('模型下载完成，维度:', model.get_sentence_embedding_dimension())"
+print('Embedding model ready, dim:', model.get_sentence_embedding_dimension())"
 
-# 预下载 jieba 词典
-RUN python -c "import jieba; jieba.lcut('初始化jieba词典'); print('jieba 初始化完成')"
+# Pre-download reranker model at build time (avoids 2-3 min cold start on first run)
+RUN python -c "\
+from sentence_transformers import CrossEncoder; \
+model = CrossEncoder('BAAI/bge-reranker-base'); \
+print('Reranker model ready')"
+
+# Pre-download jieba dictionary
+RUN python -c "import jieba; jieba.lcut('init'); print('jieba ready')"
 
 # 复制项目代码
 COPY app/ ./app/

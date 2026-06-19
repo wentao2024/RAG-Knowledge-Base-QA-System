@@ -1,5 +1,5 @@
 """
-文档处理器 支持中文PDF解析、文本清洗、智能分块
+Document processor: PDF parsing, text cleaning, and intelligent chunking.
 """
 import re
 import uuid
@@ -37,10 +37,10 @@ class DocumentProcessor:
         self.child_chunk_size = child_chunk_size or settings.child_chunk_size
         self.child_chunk_overlap = child_chunk_overlap or settings.child_chunk_overlap
 
-    # ─── PDF解析 ───────────────────────────────────────────────────────────────
+    # ─── PDF parsing ───────────────────────────────────────────────────────────
 
     def extract_text_from_pdf(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """逐页提取PDF文本 保留页码元信息"""
+        """Extract PDF text page by page, preserving page number metadata."""
         pages = []
         doc = fitz.open(pdf_path)
         for page_num, page in enumerate(doc, start=1):
@@ -49,37 +49,37 @@ class DocumentProcessor:
             if text.strip():
                 pages.append({"page": page_num, "text": text})
         doc.close()
-        logger.info(f"提取 {len(pages)} 页文本，来自: {pdf_path}")
+        logger.info(f"Extracted {len(pages)} pages of text from: {pdf_path}")
         return pages
 
-    # ─── 文本清洗 ──────────────────────────────────────────────────────────────
+    # ─── Text cleaning ─────────────────────────────────────────────────────────
 
     def _clean_text(self, text: str) -> str:
-        """清洗PDF提取的原始文本"""
-        # 删除页眉页脚常见模式（页码等）
+        """Clean raw text extracted from a PDF."""
+        # Remove common header/footer patterns (page numbers, etc.)
         text = re.sub(r"\n(\d+)\n", "\n", text)
-        # 合并连字符断行（英文）
+        # Merge hyphenated line breaks (English)
         text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-        # 中文段落：去除段内多余换行
+        # Remove mid-paragraph line breaks
         text = re.sub(r"(?<=[^\n])\n(?=[^\n])", "", text)
-        # 多个空行压缩为一个
+        # Collapse multiple blank lines into one
         text = re.sub(r"\n{3,}", "\n\n", text)
-        # 清除特殊控制字符
+        # Remove special control characters
         text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-        # 全角标点统一
+        # Normalise full-width spaces
         text = text.replace("　", " ").strip()
         return text
 
-    # ─── 分块策略 ──────────────────────────────────────────────────────────────
+    # ─── Chunking strategy ─────────────────────────────────────────────────────
 
     def split_into_chunks(
         self, pages: List[Dict[str, Any]], filename: str, doc_id: str
     ) -> List[Chunk]:
         """
-        智能分块：
-        1. 优先按段落分割
-        2. 段落过长时再按 chunk_size 滑窗切分
-        3. 保留页码、文件名等元数据
+        Intelligent chunking:
+        1. Prefer splitting on paragraph boundaries.
+        2. Fall back to sliding-window splitting for overly long paragraphs.
+        3. Preserve page number, filename, and other metadata.
         """
         chunks: List[Chunk] = []
 
@@ -87,7 +87,7 @@ class DocumentProcessor:
             page_num = page_info["page"]
             text = page_info["text"]
 
-            # 按段落粗分
+            # Coarse split on paragraph breaks
             paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 
             buffer = ""
@@ -106,7 +106,7 @@ class DocumentProcessor:
                                 },
                             )
                         )
-                    # 段落本身超长则滑窗切分
+                    # Paragraph itself is too long: apply sliding window
                     if len(para) > self.chunk_size:
                         sub_chunks = self._sliding_window(para)
                         for sc in sub_chunks:
@@ -124,7 +124,7 @@ class DocumentProcessor:
                     else:
                         buffer = para
 
-            # 剩余 buffer
+            # Flush remaining buffer
             if buffer:
                 chunks.append(
                     Chunk(
@@ -137,11 +137,11 @@ class DocumentProcessor:
                     )
                 )
 
-        logger.info(f"文档 {filename} 分块完成，共 {len(chunks)} 个块")
+        logger.info(f"Document {filename} chunked, total {len(chunks)} chunks")
         return chunks
 
     def _sliding_window(self, text: str) -> List[str]:
-        """按字符滑窗切分超长文本"""
+        """Sliding-window split for oversized text."""
         chunks = []
         start = 0
         while start < len(text):
@@ -150,10 +150,10 @@ class DocumentProcessor:
             start += self.chunk_size - self.chunk_overlap
         return chunks
 
-    # ─── 一体化处理 ────────────────────────────────────────────────────────────
+    # ─── End-to-end processing ─────────────────────────────────────────────────
 
     def process_pdf(self, pdf_path: str, filename: str) -> Tuple[str, List[Chunk]]:
-        """完整处理PDF 提取 → 清洗 → 分块，返回 (doc_id, chunks)"""
+        """Full PDF pipeline: extract → clean → chunk. Returns (doc_id, chunks)."""
         doc_id = str(uuid.uuid4())
         pages = self.extract_text_from_pdf(pdf_path)
         chunks = self.split_into_chunks(pages, filename, doc_id)
@@ -163,11 +163,11 @@ class DocumentProcessor:
         self, pdf_path: str, filename: str
     ) -> Tuple[str, List["Chunk"], List["Chunk"]]:
         """
-        Parent-Child 模式处理 PDF。
+        Process a PDF in Parent-Child mode.
 
-        返回 (doc_id, parent_chunks, child_chunks)：
-          - parent_chunks：大块（~chunk_size 字），存入 ParentStore，喂给 LLM
-          - child_chunks：小块（~child_chunk_size 字），存入向量库 + BM25，做 Embedding
+        Returns (doc_id, parent_chunks, child_chunks):
+          - parent_chunks: large chunks (~chunk_size chars), stored in ParentStore, fed to LLM.
+          - child_chunks: small chunks (~child_chunk_size chars), stored in vector store + BM25, used for embedding.
         """
         doc_id = str(uuid.uuid4())
         pages = self.extract_text_from_pdf(pdf_path)
@@ -176,12 +176,12 @@ class DocumentProcessor:
         for parent in parent_chunks:
             child_chunks.extend(self._split_into_children(parent))
         logger.info(
-            f"Parent-Child 分块完成: {len(parent_chunks)} 父块, {len(child_chunks)} 子块"
+            f"Parent-Child chunking complete: {len(parent_chunks)} parent chunks, {len(child_chunks)} child chunks"
         )
         return doc_id, parent_chunks, child_chunks
 
     def _split_into_children(self, parent: "Chunk") -> List["Chunk"]:
-        """将一个父 Chunk 拆分为若干小子 Chunk，子 Chunk 携带 parent_id。"""
+        """Split a parent Chunk into smaller child Chunks, each carrying the parent_id."""
         sub_texts = self._sliding_window_child(parent.content)
         children = []
         for text in sub_texts:
@@ -197,7 +197,7 @@ class DocumentProcessor:
         return children
 
     def _sliding_window_child(self, text: str) -> List[str]:
-        """按 child_chunk_size / child_chunk_overlap 滑窗切分。"""
+        """Sliding-window split using child_chunk_size / child_chunk_overlap."""
         chunks = []
         start = 0
         size = self.child_chunk_size
