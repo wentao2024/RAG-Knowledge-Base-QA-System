@@ -1,5 +1,5 @@
 """
-ChromaDB 向量存储：持久化、增删查
+ChromaDB vector store: persistent storage with add, delete, and query operations.
 """
 import os
 from typing import List, Dict, Any, Tuple
@@ -24,14 +24,14 @@ class VectorStore:
             metadata={"hnsw:space": "cosine"},
         )
         logger.info(
-            f"ChromaDB 初始化完成，集合: {settings.collection_name}，"
-            f"现有文档数: {self.collection.count()}"
+            f"ChromaDB initialised, collection: {settings.collection_name}, "
+            f"existing documents: {self.collection.count()}"
         )
 
-    # ─── 写入 ──────────────────────────────────────────────────────────────────
+    # ─── Write ─────────────────────────────────────────────────────────────────
 
     def add_chunks(self, chunks: List[Chunk]) -> None:
-        """批量写入 chunks 到向量库"""
+        """Batch-write chunks to the vector store."""
         if not chunks:
             return
         texts = [c.content for c in chunks]
@@ -46,14 +46,14 @@ class VectorStore:
             documents=texts,
             metadatas=metadatas,
         )
-        logger.info(f"写入 {len(chunks)} 个块到向量库")
+        logger.info(f"Wrote {len(chunks)} chunks to vector store")
 
-    # ─── 查询 ──────────────────────────────────────────────────────────────────
+    # ─── Query ─────────────────────────────────────────────────────────────────
 
     def query(
         self, query: str, top_k: int = None
     ) -> List[Dict[str, Any]]:
-        """向量检索，返回带 score 的结果列表"""
+        """Vector search; returns a list of results with scores."""
         k = top_k or settings.top_k
         query_emb = self.embedder.embed_query(query)
 
@@ -80,21 +80,21 @@ class VectorStore:
             )
         return hits
 
-    # ─── 删除 ──────────────────────────────────────────────────────────────────
+    # ─── Delete ────────────────────────────────────────────────────────────────
 
     def delete_by_doc_id(self, doc_id: str) -> int:
-        """按 doc_id 删除所有相关 chunk"""
+        """Delete all chunks associated with a doc_id."""
         results = self.collection.get(
             where={"doc_id": doc_id}, include=["documents"]
         )
         ids = results["ids"]
         if ids:
             self.collection.delete(ids=ids)
-        logger.info(f"删除 doc_id={doc_id}，共 {len(ids)} 个块")
+        logger.info(f"Deleted doc_id={doc_id}, {len(ids)} chunks removed")
         return len(ids)
 
     def get_all_doc_ids(self) -> List[Dict[str, Any]]:
-        """列出所有文档元信息（去重）"""
+        """List all document metadata (deduplicated)."""
         results = self.collection.get(include=["metadatas"])
         seen = {}
         for meta in results["metadatas"]:

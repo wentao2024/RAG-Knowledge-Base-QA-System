@@ -1,5 +1,5 @@
 """
-文件上传 API  PDF 上传、处理、索引
+File upload API — PDF upload, processing, and indexing.
 """
 import os
 import uuid
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 
 os.makedirs(settings.upload_dir, exist_ok=True)
 
-# 文档元信息持久化
+# Document metadata persistence
 DOC_META_PATH = os.path.join(settings.chroma_persist_dir, "doc_meta.json")
 
 
@@ -43,31 +43,31 @@ def _save_doc_meta(meta: dict):
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     """
-    上传 PDF 文档并索引
-    
-    流程：
-    1. 保存文件
-    2. 提取文本
-    3. 智能分块
-    4. 写入向量库 + BM25 索引
-    5. 记录元信息
-    """
-    # 校验文件类型
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="仅支持 PDF 格式")
+    Upload and index a PDF document.
 
-    # 文件大小限制 50MB
+    Pipeline:
+    1. Save the file
+    2. Extract text
+    3. Smart chunking
+    4. Write to vector store + BM25 index
+    5. Record metadata
+    """
+    # Validate file type
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    # File size limit: 50 MB
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件不能超过 50MB")
+        raise HTTPException(status_code=400, detail="File must not exceed 50 MB")
 
-    # 保存文件
+    # Save file
     safe_filename = f"{uuid.uuid4().hex}_{file.filename}"
     save_path = os.path.join(settings.upload_dir, safe_filename)
     async with aiofiles.open(save_path, "wb") as f:
         await f.write(content)
 
-    logger.info(f"文件保存: {save_path}，大小: {len(content)/1024:.1f} KB")
+    logger.info(f"File saved: {save_path}, size: {len(content)/1024:.1f} KB")
 
     try:
         processor = DocumentProcessor()
@@ -76,22 +76,22 @@ async def upload_document(file: UploadFile = File(...)):
             doc_id, parent_chunks, child_chunks = processor.process_pdf_parent_child(
                 save_path, file.filename
             )
-            index_chunks = child_chunks   # 小块入向量库 / BM25
+            index_chunks = child_chunks   # small chunks go into vector store / BM25
             display_count = len(parent_chunks)
             msg = (
-                f"上传成功！父块 {len(parent_chunks)} 个（喂给 LLM），"
-                f"子块 {len(child_chunks)} 个（用于精确检索）"
+                f"Upload successful! {len(parent_chunks)} parent chunks (fed to LLM), "
+                f"{len(child_chunks)} child chunks (used for precise retrieval)"
             )
         else:
             doc_id, chunks = processor.process_pdf(save_path, file.filename)
             index_chunks = chunks
             display_count = len(chunks)
-            msg = f"上传成功！已创建 {len(chunks)} 个文本块"
+            msg = f"Upload successful! Created {len(chunks)} text chunks"
 
         if not index_chunks:
-            raise HTTPException(status_code=422, detail="PDF 内容为空或无法解析")
+            raise HTTPException(status_code=422, detail="PDF content is empty or cannot be parsed")
 
-        # 写入索引
+        # Write to index
         vector_store = VectorStore()
         bm25_store = BM25Store()
         vector_store.add_chunks(index_chunks)
@@ -100,7 +100,7 @@ async def upload_document(file: UploadFile = File(...)):
         if settings.enable_parent_child:
             ParentStore().add_parents(parent_chunks)
 
-        # 保存元信息
+        # Save metadata
         meta = _load_doc_meta()
         meta[doc_id] = {
             "filename": file.filename,
@@ -110,7 +110,7 @@ async def upload_document(file: UploadFile = File(...)):
         }
         _save_doc_meta(meta)
 
-        logger.info(f"文档索引完成: {file.filename}, doc_id={doc_id}, chunks={display_count}")
+        logger.info(f"Document indexed: {file.filename}, doc_id={doc_id}, chunks={display_count}")
 
         return UploadResponse(
             filename=file.filename,
@@ -122,20 +122,20 @@ async def upload_document(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"文档处理失败: {e}")
-        raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
+        logger.error(f"Document processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
 
 
 @router.get("", response_model=ListDocumentsResponse)
 async def list_documents():
-    """列出所有已索引文档"""
+    """List all indexed documents."""
     meta = _load_doc_meta()
     docs = []
     for doc_id, info in meta.items():
         docs.append(
             DocumentInfo(
                 doc_id=doc_id,
-                filename=info.get("filename", "未知"),
+                filename=info.get("filename", "unknown"),
                 chunks_count=info.get("chunks_count", 0),
                 upload_time=info.get("upload_time", ""),
             )
@@ -145,15 +145,15 @@ async def list_documents():
 
 @router.delete("/{doc_id}")
 async def delete_document(doc_id: str):
-    """删除文档及其索引"""
+    """Delete a document and its index."""
     meta = _load_doc_meta()
     if doc_id not in meta:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     info = meta[doc_id]
-    filename = info.get("filename", "未知")
+    filename = info.get("filename", "unknown")
 
-    # 删除索引
+    # Delete index
     vector_store = VectorStore()
     bm25_store = BM25Store()
     v_count = vector_store.delete_by_doc_id(doc_id)
@@ -161,17 +161,17 @@ async def delete_document(doc_id: str):
     if settings.enable_parent_child:
         ParentStore().delete_by_doc_id(doc_id)
 
-    # 删除文件
+    # Delete file
     file_path = info.get("file_path", "")
     if file_path and os.path.exists(file_path):
         os.remove(file_path)
 
-    # 更新元信息
+    # Update metadata
     del meta[doc_id]
     _save_doc_meta(meta)
 
     return {
-        "message": f"文档 '{filename}' 已删除",
+        "message": f"Document '{filename}' deleted",
         "vector_chunks_deleted": v_count,
         "bm25_chunks_deleted": b_count,
     }
