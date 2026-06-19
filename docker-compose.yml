@@ -1,6 +1,19 @@
 version: "3.9"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    volumes:
+      - rag_redis:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   rag-app:
     build:
       context: .
@@ -38,6 +51,9 @@ services:
       - CHUNK_SIZE=512
       - CHUNK_OVERLAP=64
 
+      # ── Redis ─────────────────────────────────────
+      - REDIS_URL=redis://redis:6379
+
       # ── 日志 ──────────────────────────────────────
       - LOG_LEVEL=INFO
 
@@ -59,6 +75,8 @@ volumes:
   rag_chroma:
     driver: local
   rag_uploads:
+    driver: local
+  rag_redis:
     driver: local
 
 networks:

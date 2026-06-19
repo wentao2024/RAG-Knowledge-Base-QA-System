@@ -1,6 +1,6 @@
 """
-BM25 稀疏检索 jieba 中文分词 + rank_bm25
-支持增量更新和持久化
+BM25 sparse retrieval using jieba tokenisation + rank_bm25.
+Supports incremental updates and persistence.
 """
 import os
 import pickle
@@ -14,12 +14,12 @@ from app.core.document_processor import Chunk
 
 BM25_INDEX_PATH = os.path.join(settings.chroma_persist_dir, "bm25_index.pkl")
 
-# 加载自定义词典（如有）
+# Load custom dictionary if available
 jieba.setLogLevel("ERROR")
 
 
 def _tokenize(text: str) -> List[str]:
-    """jieba 中文分词，去除停用词和单字符"""
+    """Tokenise text with jieba; remove stopwords and single-character tokens."""
     tokens = jieba.lcut(text)
     tokens = [t.strip() for t in tokens if len(t.strip()) > 1]
     return tokens
@@ -32,7 +32,7 @@ class BM25Store:
         self.bm25: BM25Okapi = None
         self._load()
 
-    # ─── 持久化 ────────────────────────────────────────────────────────────────
+    # ─── Persistence ───────────────────────────────────────────────────────────
 
     def _load(self):
         if os.path.exists(BM25_INDEX_PATH):
@@ -42,9 +42,9 @@ class BM25Store:
                 self.documents = data["documents"]
                 self.tokenized_corpus = data["tokenized_corpus"]
                 self._rebuild_index()
-                logger.info(f"BM25 索引加载完成，文档数: {len(self.documents)}")
+                logger.info(f"BM25 index loaded, document count: {len(self.documents)}")
             except Exception as e:
-                logger.warning(f"BM25 索引加载失败，重新创建: {e}")
+                logger.warning(f"BM25 index load failed, recreating: {e}")
                 self._reset()
         else:
             self._reset()
@@ -69,7 +69,7 @@ class BM25Store:
         if self.tokenized_corpus:
             self.bm25 = BM25Okapi(self.tokenized_corpus)
 
-    # ─── 写入 ──────────────────────────────────────────────────────────────────
+    # ─── Write ─────────────────────────────────────────────────────────────────
 
     def add_chunks(self, chunks: List[Chunk]) -> None:
         for chunk in chunks:
@@ -84,9 +84,9 @@ class BM25Store:
             self.tokenized_corpus.append(tokens)
         self._rebuild_index()
         self._save()
-        logger.info(f"BM25 新增 {len(chunks)} 个块，总计 {len(self.documents)}")
+        logger.info(f"BM25 added {len(chunks)} chunks, total: {len(self.documents)}")
 
-    # ─── 查询 ──────────────────────────────────────────────────────────────────
+    # ─── Query ─────────────────────────────────────────────────────────────────
 
     def query(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         k = top_k or settings.top_k
@@ -95,7 +95,7 @@ class BM25Store:
         query_tokens = _tokenize(query)
         scores = self.bm25.get_scores(query_tokens)
 
-        # 取 top_k
+        # Take top_k
         indexed = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:k]
         results = []
         for idx, score in indexed:
@@ -110,7 +110,7 @@ class BM25Store:
                 )
         return results
 
-    # ─── 删除 ──────────────────────────────────────────────────────────────────
+    # ─── Delete ────────────────────────────────────────────────────────────────
 
     def delete_by_doc_id(self, doc_id: str) -> int:
         original_len = len(self.documents)
@@ -129,5 +129,5 @@ class BM25Store:
         self._rebuild_index()
         self._save()
         deleted = original_len - len(self.documents)
-        logger.info(f"BM25 删除 doc_id={doc_id}，共 {deleted} 个块")
+        logger.info(f"BM25 deleted doc_id={doc_id}, {deleted} chunks removed")
         return deleted

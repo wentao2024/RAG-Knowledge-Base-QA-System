@@ -20,13 +20,22 @@ class Settings(BaseSettings):
     enable_reranker: bool = True
     reranker_model: str = "BAAI/bge-reranker-base"
 
-    # Chunking — parent chunk (喂给 LLM 的大块)
+    # Chunking — parent chunk (large chunk fed to the LLM)
     chunk_size: int = 512
     chunk_overlap: int = 64
-    # Chunking — child chunk (做 Embedding 的小块，parent-child 模式专用)
+    # Chunking — child chunk (small chunk for embedding, parent-child mode only)
     child_chunk_size: int = 150
     child_chunk_overlap: int = 30
     enable_parent_child: bool = True
+
+    # Redis & Memory
+    redis_url: str = "redis://localhost:6379"
+    session_ttl: int = 604800           # 7 days
+    memory_ttl: int = 2592000           # 30 days
+    memory_fact_extract_every: int = 3  # extract facts every N turns
+    memory_compress_after: int = 15     # compress history into summary after N turns
+    memory_top_k: int = 3              # number of memories injected per retrieval
+    enable_user_memory: bool = True
 
     # App
     app_host: str = "0.0.0.0"
@@ -37,7 +46,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,
-        extra="ignore",  # .env 里有多余字段不报错
+        extra="ignore",  # extra fields in .env are silently ignored
     )
 
 
