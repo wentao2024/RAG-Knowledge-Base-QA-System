@@ -26,6 +26,9 @@ rouge-score==0.1.2
 nltk==3.8.1
 bert-score==0.3.13
 
+# Redis
+redis==5.0.4
+
 # Utils
 python-dotenv==1.0.1
 aiofiles==23.2.1
