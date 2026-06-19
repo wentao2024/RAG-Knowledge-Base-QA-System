@@ -1,8 +1,8 @@
 """
-Query 改写模块：
-1. 结合对话历史，将多轮问题补全为独立问题
-2. 扩展关键词，提升检索召回率
-3. 生成多个子查询（可选），用于多路召回
+Query rewriting module:
+1. Uses conversation history to expand multi-turn questions into self-contained queries.
+2. Expands keywords to improve retrieval recall.
+3. Optionally generates multiple sub-queries for multi-path retrieval.
 """
 from typing import List, Optional
 from loguru import logger
@@ -10,29 +10,29 @@ from app.core.llm_client import LLMClient
 from app.models.schemas import Message
 
 
-REWRITE_SYSTEM_PROMPT = """你是一个专业的搜索查询优化专家。你的任务是：
-1. 分析用户的对话历史和当前问题
-2. 将当前问题改写为一个独立、完整、清晰的检索查询
-3. 扩展相关关键词，提升检索覆盖范围
-4. 保持问题的原始意图不变
+REWRITE_SYSTEM_PROMPT = """You are a professional search query optimisation expert. Your tasks are:
+1. Analyse the conversation history and the current question.
+2. Rewrite the current question into a self-contained, complete, and clear retrieval query.
+3. Expand relevant keywords to broaden retrieval coverage.
+4. Preserve the original intent of the question.
 
-改写规则：
-- 如果问题已经完整清晰，保持基本结构，补充专业术语
-- 如果问题依赖上下文（如"这个"、"它"等指代），补全具体内容
-- 保持中文输出
-- 只返回改写后的查询，不要解释
+Rewriting rules:
+- If the question is already complete and clear, keep the core structure and add relevant terminology.
+- If the question relies on context (e.g. "this", "it"), resolve the reference explicitly.
+- Output in English.
+- Return only the rewritten query, no explanation.
 
-示例：
-历史: [用户:什么是transformer] [助手:Transformer是...]
-当前: 它有哪些变体？
-改写: Transformer模型的主要变体有哪些？包括BERT、GPT等架构"""
+Example:
+History: [User: What is a transformer?] [Assistant: A Transformer is ...]
+Current: What are its variants?
+Rewritten: What are the main variants of the Transformer model? Including architectures such as BERT and GPT."""
 
-DECOMPOSE_SYSTEM_PROMPT = """你是查询分解专家。将复杂问题分解为2-3个简单的子查询，便于分别检索。
+DECOMPOSE_SYSTEM_PROMPT = """You are a query decomposition expert. Break a complex question into 2-3 simple sub-queries for separate retrieval.
 
-格式要求 JSON数组:
-["子查询1", "子查询2", "子查询3"]
+Required format — JSON array:
+["sub-query 1", "sub-query 2", "sub-query 3"]
 
-只返回JSON, 不要其他内容。"""
+Return only JSON, no other content."""
 
 
 class QueryRewriter:
@@ -46,26 +46,26 @@ class QueryRewriter:
         enable_decompose: bool = False,
     ) -> dict:
         """
-        改写查询
-        
+        Rewrite the query.
+
         Returns:
             {
                 "original": str,
                 "rewritten": str,
-                "sub_queries": List[str]  # 若 enable_decompose=True
+                "sub_queries": List[str]  # only when enable_decompose=True
             }
         """
         result = {"original": query, "rewritten": query, "sub_queries": [query]}
 
-        # ── 1. 结合历史改写 ─────────────────────────────────────────────────
+        # ── 1. Rewrite using conversation history ──────────────────────────
         history_text = ""
         if history:
-            recent = history[-6:]  # 最近 3 轮
+            recent = history[-6:]  # last 3 turns
             for msg in recent:
-                role = "用户" if msg.role == "user" else "助手"
+                role = "User" if msg.role == "user" else "Assistant"
                 history_text += f"{role}: {msg.content[:200]}\n"
 
-        user_prompt = f"对话历史:\n{history_text}\n当前问题: {query}" if history_text else f"问题: {query}"
+        user_prompt = f"Conversation history:\n{history_text}\nCurrent question: {query}" if history_text else f"Question: {query}"
 
         try:
             rewritten = await self.llm.complete(
@@ -76,26 +76,26 @@ class QueryRewriter:
             rewritten = rewritten.strip()
             if rewritten and len(rewritten) < 500:
                 result["rewritten"] = rewritten
-                logger.info(f"Query改写: '{query}' → '{rewritten}'")
+                logger.info(f"Query rewritten: '{query}' → '{rewritten}'")
         except Exception as e:
-            logger.warning(f"Query改写失败，使用原始query: {e}")
+            logger.warning(f"Query rewrite failed, using original query: {e}")
             result["rewritten"] = query
 
-        # ── 2. 子查询分解（可选）──────────────────────────────────────────────
+        # ── 2. Sub-query decomposition (optional) ─────────────────────────
         if enable_decompose and len(query) > 20:
             try:
                 import json
                 decomposed_str = await self.llm.complete(
                     system=DECOMPOSE_SYSTEM_PROMPT,
-                    user=f"问题: {result['rewritten']}",
+                    user=f"Question: {result['rewritten']}",
                     max_tokens=256,
                 )
                 sub_queries = json.loads(decomposed_str.strip())
                 if isinstance(sub_queries, list) and sub_queries:
                     result["sub_queries"] = [result["rewritten"]] + sub_queries[:2]
-                    logger.info(f"子查询分解: {result['sub_queries']}")
+                    logger.info(f"Sub-query decomposition: {result['sub_queries']}")
             except Exception as e:
-                logger.warning(f"子查询分解失败: {e}")
+                logger.warning(f"Sub-query decomposition failed: {e}")
                 result["sub_queries"] = [result["rewritten"]]
         else:
             result["sub_queries"] = [result["rewritten"]]

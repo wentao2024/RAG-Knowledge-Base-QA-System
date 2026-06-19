@@ -1,6 +1,6 @@
 """
-LLM 客户端(OpenAI 接口（兼容 gpt-4o / gpt-4o-mini / DeepSeek / Qwen 等）
-重试策略：只重试网络/限流错误，认证/参数错误直接抛出不重试
+LLM client using the OpenAI API (compatible with gpt-4o / gpt-4o-mini / DeepSeek / Qwen, etc.)
+Retry strategy: only retry network/rate-limit errors; authentication/parameter errors are raised immediately.
 """
 from typing import List, AsyncIterator
 from loguru import logger
@@ -15,12 +15,12 @@ from app.config import settings
 from app.models.schemas import Message
 
 
-# ── 判断哪些异常值得重试 ────────────────────────────────────────────────────────
+# ── Determine which exceptions are worth retrying ──────────────────────────────
 
 def _is_retryable(exc: BaseException) -> bool:
     """
-    只重试：网络错误、限流(429)、服务端 5xx
-    不重试：认证(401)、参数错误(400)、模型不存在(404)
+    Retry only: network errors, rate limits (429), server 5xx.
+    Do not retry: authentication (401), bad request (400), model not found (404).
     """
     cls_name = type(exc).__name__
     NON_RETRYABLE = {
@@ -38,11 +38,11 @@ _RETRY = dict(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=15),
     retry=retry_if_exception(_is_retryable),
-    reraise=True,  # 直接抛出原始异常，不包装成 RetryError
+    reraise=True,  # raise the original exception, not a RetryError wrapper
 )
 
 
-# ── LLM 客户端 ─────────────────────────────────────────────────────────────────
+# ── LLM client ─────────────────────────────────────────────────────────────────
 
 class LLMClient:
 
@@ -50,16 +50,16 @@ class LLMClient:
         key = settings.openai_api_key
         if not key:
             raise ValueError(
-                " OPENAI_API_KEY 未配置！请在 .env 文件中填入你的 OpenAI API Key。"
+                "OPENAI_API_KEY is not configured. Please add your OpenAI API key to the .env file."
             )
         self.model = settings.llm_model
         self.client = AsyncOpenAI(
             api_key=key,
             base_url=settings.openai_base_url,
         )
-        logger.info(f"LLM 初始化: {settings.openai_base_url} / {self.model}")
+        logger.info(f"LLM initialised: {settings.openai_base_url} / {self.model}")
 
-    # ─── 单次补全 ──────────────────────────────────────────────────────────────
+    # ─── Single completion ─────────────────────────────────────────────────────
 
     @retry(**_RETRY)
     async def complete(
@@ -80,7 +80,7 @@ class LLMClient:
         )
         return resp.choices[0].message.content
 
-    # ─── 多轮对话 ──────────────────────────────────────────────────────────────
+    # ─── Multi-turn chat ───────────────────────────────────────────────────────
 
     @retry(**_RETRY)
     async def chat(
@@ -99,7 +99,7 @@ class LLMClient:
         )
         return resp.choices[0].message.content
 
-    # ─── 流式输出 ──────────────────────────────────────────────────────────────
+    # ─── Streaming output ──────────────────────────────────────────────────────
 
     async def stream_chat(
         self,
