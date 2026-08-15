@@ -2,6 +2,7 @@
 RAG application entry point.
 """
 import os
+
 import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
