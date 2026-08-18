@@ -1,5 +1,5 @@
 """
-RAG Generator: assembles retrieval context and calls the LLM to produce an answer.
+RAG Generator: assembles retrieval context and calls the LLM to produce an answer
 """
 from typing import List, Dict, Any, AsyncIterator, Optional
 from loguru import logger
