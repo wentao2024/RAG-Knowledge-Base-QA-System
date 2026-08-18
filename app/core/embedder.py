@@ -7,7 +7,6 @@ from sentence_transformers import SentenceTransformer
 from loguru import logger
 from app.config import settings
 
-
 class Embedder:
     _instance = None  # singleton to avoid reloading the model
 
