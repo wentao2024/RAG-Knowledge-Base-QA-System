@@ -10,6 +10,7 @@ from app.core.llm_client import LLMClient
 from app.models.schemas import EvalResponse
 
 
+
 def _extract_score(text: str) -> float:
     """Extract a 0-1 numeric score from LLM output."""
     text = text.strip()
